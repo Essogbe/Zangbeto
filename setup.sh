@@ -4,11 +4,11 @@ set -euo pipefail
 # ------------------------------
 # Configuration (modifiez si besoin)
 # ------------------------------
-PROJECT_DIR="$HOME/site-monitor"         # Répertoire du projet
-VENV_DIR="$PROJECT_DIR/venv"             # Emplacement du virtualenv
-SERVICE_NAME="simple-sites-monitor"                   # Nom du service systemd (sans .service)
+PROJECT_DIR="$HOME/zangbeto-monitor"         # Répertoire du projet
+VENV_DIR="$PROJECT_DIR/.venv"             # Emplacement du virtualenv
+SERVICE_NAME="zangbeto-monitor"                   # Nom du service systemd (sans .service)
 PYTHON_BIN="$VENV_DIR/bin/python"        # Interpréteur Python du venv
-MONITOR_SCRIPT="$PROJECT_DIR/monitor.py" # Script principal
+MONITOR_SCRIPT="$PROJECT_DIR/main.py" # Script principal
 REPORT_PATH="$PROJECT_DIR/rapport.html"  # Chemin du rapport HTML
 USER="$(whoami)"               # Utilisateur courant pour systemd
 
@@ -17,6 +17,10 @@ USER="$(whoami)"               # Utilisateur courant pour systemd
 # ------------------------------
 echo " Création du dossier de projet : $PROJECT_DIR"
 mkdir -p "$PROJECT_DIR"
+cp -r $PWD/* "$PROJECT_DIR" || {
+  echo "Erreur lors de la copie des fichiers dans $PROJECT_DIR"
+  exit 1
+}
 cd "$PROJECT_DIR"
 
 # (Assurez-vous d’y placer monitor.py, templates/, notify.py, etc.)
@@ -25,9 +29,24 @@ cd "$PROJECT_DIR"
 # ------------------------------
 # 2. Création du virtualenv
 # ------------------------------
-echo "  Création et activation d’un virtualenv dans $VENV_DIR"
-python3 -m venv "$VENV_DIR"
-echo "   -> Virtualenv créé."
+if [[ -d "$VENV_DIR" ]]; then
+  echo "  Virtualenv déjà existant dans $VENV_DIR, le supprime."
+    rm -rf "$VENV_DIR"
+    echo "  Création et activation d’un nouveau virtualenv dans $VENV_DIR"
+    python3 -m venv "$VENV_DIR"
+    echo "   -> Virtualenv créé."
+    echo "  Activation du virtualenv"
+    source "$VENV_DIR/bin/activate"
+    echo "   -> Virtualenv activé."
+ 
+  
+else
+  echo "  Aucun virtualenv trouvé dans $VENV_DIR, création en cours."
+  echo "  Création et activation d’un virtualenv dans $VENV_DIR"
+ python3 -m venv "$VENV_DIR"
+ echo "   -> Virtualenv créé."
+
+fi
 
 echo "   Installation des dépendances dans le venv"
 "$VENV_DIR/bin/pip" install --upgrade pip
@@ -58,7 +77,6 @@ ExecStart=${PYTHON_BIN} ${MONITOR_SCRIPT} \\
     --frequency 30 \\
     --output ${REPORT_PATH} \\
     --interval 12
-EnvironmentFile=${PROJECT_DIR}/.env
 EOF
 
 sudo tee "$TIMER_PATH" > /dev/null <<EOF
