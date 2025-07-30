@@ -250,14 +250,12 @@ This setup ensures Zangbéto runs automatically on system boot and restarts on f
 
 **Platform & Deployment:**
 * Windows support and native installers
-* Docker 
-* PyPI package distribution
+
 
 
 **Data Management:**
 * Advanced retention policies and data purging
-* Data export/import capabilities
-* Historical data compression
+
 * Performance metrics and trends analysis
 
 ---
