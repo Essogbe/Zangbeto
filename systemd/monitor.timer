@@ -1,0 +1,11 @@
+# /etc/systemd/system/monitor.timer
+[Unit]
+Description=Timer pour lancer le monitoring toutes les 30 minutes
+
+[Timer]
+OnBootSec=1min               # Démarrage 1 min après le boot
+OnUnitActiveSec=30min        # Puis toutes les 30 minutes
+Unit=monitor.service
+
+[Install]
+WantedBy=timers.target

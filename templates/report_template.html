@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rapport de monitoring</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body { font-family: sans-serif; padding: 1rem; max-width: 1000px; margin: auto; }
+        h1, h2 { text-align: center; }
+        .chart-container { width: 100%; margin: auto; }
+        table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+        th, td { border: 1px solid #ccc; padding: 8px; }
+        .ok { background-color: #e0f8e0; }
+        .fail { background-color: #f9d6d5; }
+        @media (max-width: 600px) {
+            table, thead, tbody, th, td, tr { display: block; }
+            td { word-break: break-word; }
+        }
+    </style>
+</head>
+<body>
+    <h1>Rapport de monitoring</h1>
+    <p style="text-align:center;">Check effectué le {{ timestamp }}</p>
+
+    <!-- Graphique du dernier check -->
+    <div class="chart-container" id="status_chart"></div>
+
+    <!-- Graphique historique 12h -->
+    <h2>Historique des 12 dernières heures</h2>
+    <div class="chart-container" id="history_chart"></div>
+
+    <!-- Tableau des pages -->
+    <table>
+        <thead>
+            <tr>
+                <th>URL</th>
+                <th>Status</th>
+                <th>Temps (s)</th>
+                <th>Erreur</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for page in pages %}
+        <tr class="{{ 'ok' if page.ok else 'fail' }}">
+            <td>{{ page.url }}</td>
+            <td>{{ page.status_code or '-' }}</td>
+            <td>{{ page.response_time or '-' }}</td>
+            <td>{{ page.error or '' }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    <script>
+        // Dernier check - répartition des status codes
+        var trace1 = {
+            x: {{ status_labels|tojson }},
+            y: {{ status_counts|tojson }},
+            type: 'bar',
+            name: 'Répartition des codes'
+        };
+        Plotly.newPlot('status_chart', [trace1], {responsive: true});
+
+        // Historique 12h - stacked bar up/down
+        var traceUp = {
+            x: {{ hist_labels|tojson }},
+            y: {{ hist_up|tojson }},
+            type: 'bar',
+            name: 'UP'
+        };
+        var traceDown = {
+            x: {{ hist_labels|tojson }},
+            y: {{ hist_down|tojson }},
+            type: 'bar',
+            name: 'DOWN'
+        };
+        var layout = {barmode: 'stack'};
+        Plotly.newPlot('history_chart', [traceUp, traceDown], layout, {responsive: true});
+    </script>
+</body>
+</html>

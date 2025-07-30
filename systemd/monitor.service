@@ -1,0 +1,21 @@
+# /etc/systemd/system/monitor.service
+[Unit]
+Description=Zangbetor Monitoring Service
+After=network.target
+
+[Service]
+Type=oneshot
+User=YOUR_USER
+WorkingDirectory=/opt/zangbetor-monitor
+Environment=PYTHONUNBUFFERED=1
+Environment=VIRTUAL_ENV=/opt/monitor_env
+Environment=PATH=/opt/monitor_env/bin:$PATH
+# Assurez-vous que le chemin vers votre script Python est correct
+# et que les variables d'environnement sont définies correctement.
+# Remplacez 'your_telegram_bot_token' et 'your_telegram_chat_id'
+# par vos valeurs réelles.
+ExecStart=/opt/monitor_env/bin/python /opt/zangbetor-monitor/monitor.py \
+    --frequency 30 \
+    --output  /opt/zangbetor-monitor/rapport.html \
+    --interval 12
+EnvironmentFile=/opt/zangbetor-monitor/.env
