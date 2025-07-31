@@ -6,7 +6,11 @@ import schedule
 import subprocess
 import threading
 from datetime import datetime
-from crawler import load_sites, explore_site, init_db, save_results, get_latest_check, generate_html_report
+from crawler import (
+    load_sites, explore_site, init_db, save_results, get_latest_check, 
+    generate_html_report, check_internet_connectivity, wait_for_connectivity,
+    save_connectivity_log
+)
 from notify import NotificationManager
 import logging
 
@@ -71,6 +75,24 @@ def send_report_notification(title, output_path):
     thread = threading.Thread(target=notification_thread, daemon=True)
     thread.start()
 
+def send_connectivity_notification(notifier, connectivity_restored=False):
+    """Send connectivity-related notifications"""
+    if connectivity_restored:
+        title = "Internet Connectivity Restored"
+        message = "Website monitoring will resume with next check cycle"
+        icon = "dialog-information"
+        logger.info("Sending connectivity restoration notification")
+    else:
+        title = "Internet Connectivity Issue"
+        message = "No internet connection detected. Website monitoring paused until connectivity is restored."
+        icon = "dialog-warning"
+        logger.warning("Sending connectivity issue notification")
+    
+    try:
+        notifier.system_notify(title, message, icon=icon)
+    except Exception as e:
+        logger.error(f"Failed to send connectivity notification: {e}")
+
 def main():
     parser = argparse.ArgumentParser(
         description="Website monitoring tool with HTML reports and notifications"
@@ -95,6 +117,14 @@ def main():
         "--one-shot", action="store_true",
         help="Run a single check, generate report, send notification and exit (equivalent to --count 1)"
     )
+    parser.add_argument(
+        "--skip-connectivity", action="store_true",
+        help="Skip internet connectivity checks (use with caution - may cause false alerts)"
+    )
+    parser.add_argument(
+        "--connectivity-wait", type=int, default=2,
+        help="Minutes to wait for connectivity restoration (default: 2 min)"
+    )
     
     args = parser.parse_args()
     
@@ -115,52 +145,128 @@ def main():
     report_interval = args.interval
     output_path = args.output
     max_checks = args.count
+    skip_connectivity_check = args.skip_connectivity
+    connectivity_wait_min = args.connectivity_wait
     
     # Log configuration
+    connectivity_mode = "disabled" if skip_connectivity_check else f"enabled (wait: {connectivity_wait_min}min)"
     if max_checks:
         logger.info(f"Configuration loaded - Frequency: {freq} min, Report interval: {report_interval} h, "
-                   f"Output: {output_path}, Max checks: {max_checks}")
+                   f"Output: {output_path}, Max checks: {max_checks}, Connectivity check: {connectivity_mode}")
     else:
         logger.info(f"Configuration loaded - Frequency: {freq} min, Report interval: {report_interval} h, "
-                   f"Output: {output_path}, Mode: continuous")
+                   f"Output: {output_path}, Mode: continuous, Connectivity check: {connectivity_mode}")
     
     # Check counter for limited runs
     check_counter = 0
+    last_connectivity_status = True  # Track connectivity changes for notifications
     
     def check_job():
         """Periodic check job - monitors all sites and sends alerts if needed"""
-        nonlocal check_counter
+        nonlocal check_counter, last_connectivity_status
         check_counter += 1
         
         logger.info(f"Starting check job #{check_counter}" + 
                    (f" of {max_checks}" if max_checks else " (continuous mode)"))
+        
+        connectivity_ok = True
+        
         try:
+            # Check internet connectivity first (unless disabled)
+            if not skip_connectivity_check:
+                logger.debug("Checking internet connectivity...")
+                connectivity_ok = check_internet_connectivity()
+                
+                if not connectivity_ok:
+                    logger.warning("No internet connectivity detected")
+                    
+                    # Send notification if connectivity just failed
+                    if last_connectivity_status:
+                        send_connectivity_notification(notifier, connectivity_restored=False)
+                    
+                    # Log connectivity issue and try to wait for restoration
+                    save_connectivity_log(connectivity_ok)
+                    
+                    logger.info(f"Attempting to wait for connectivity restoration ({connectivity_wait_min} minutes)...")
+                    if wait_for_connectivity(max_wait_minutes=connectivity_wait_min):
+                        logger.info("Connectivity restored during wait period")
+                        connectivity_ok = True
+                        
+                        # Send restoration notification if connectivity was previously down
+                        if not last_connectivity_status:
+                            send_connectivity_notification(notifier, connectivity_restored=True)
+                    else:
+                        logger.warning(f"Connectivity not restored within {connectivity_wait_min} minutes, skipping site checks")
+                        last_connectivity_status = connectivity_ok
+                        return  # Skip this check cycle
+                elif not last_connectivity_status:
+                    # Connectivity was restored between checks
+                    logger.info("Internet connectivity confirmed (was previously down)")
+                    send_connectivity_notification(notifier, connectivity_restored=True)
+                
+                # Update connectivity status tracking
+                last_connectivity_status = connectivity_ok
+            
+            # Proceed with site monitoring if connectivity is OK
             sites = load_sites()
             logger.debug(f"Loaded {len(sites)} sites to monitor")
             all_pages = []
             
             for site in sites:
                 logger.debug(f"Exploring site: {site}")
-                all_pages.extend(explore_site(site))
+                try:
+                    site_results = explore_site(site)
+                    all_pages.extend(site_results)
+                    logger.debug(f"Site {site} exploration completed: {len(site_results)} pages")
+                except Exception as e:
+                    logger.error(f"Failed to explore site {site}: {e}")
+                    continue
             
-            ts = save_results(all_pages)
+            if not all_pages:
+                logger.warning("No pages were successfully checked")
+                return
+            
+            # Save results with connectivity status
+            ts = save_results(all_pages, connectivity_ok)
             ts, latest = get_latest_check()  
             logger.info(f"Results saved for timestamp: {ts}")
             
-            # Generate HTML report
-            generate_html_report(ts, latest, output_path)
+            # Generate HTML report with connectivity status
+            generate_html_report(ts, latest, connectivity_ok, output_path)
             logger.debug(f"HTML report generated: {output_path}")
             
             # Send notification if there are failures
             fails = [p for p in latest if not p['ok']]
             if fails:
                 logger.warning(f"Found {len(fails)} failed checks")
-                msg = "\n".join(f"{p['url']} → {p.get('status_code','?')}" for p in fails)
+                
+                # Create detailed failure message
+                failure_details = []
+                for p in fails[:10]:  # Limit to first 10 failures
+                    status = p.get('status_code', '?')
+                    if p.get('error'):
+                        status = f"Error: {p['error'][:30]}"
+                    failure_details.append(f"• {p['url']} → {status}")
+                
+                msg = "Sites DOWN:\n" + "\n".join(failure_details)
+                if len(fails) > 10:
+                    msg += f"\n... and {len(fails) - 10} more"
+                
+                # Add connectivity info if relevant
+                if not connectivity_ok:
+                    msg = "⚠️ Connectivity issues detected!\n\n" + msg
+                
                 notifier.system_notify("Monitoring Alert", msg, icon="dialog-warning")
             else:
                 logger.info("All sites are healthy")
 
-            logger.info(f"Check job #{check_counter} completed at {datetime.utcnow().isoformat()}")
+            # Log summary
+            total_checked = len(all_pages)
+            failed_count = len(fails)
+            connectivity_icon = "✓" if connectivity_ok else "✗"
+            
+            logger.info(f"Check job #{check_counter} completed: {total_checked} pages checked, "
+                       f"{failed_count} failures, connectivity: {connectivity_icon}")
             
         except Exception as e:
             logger.error(f"Error during check job #{check_counter}: {e}", exc_info=True)
@@ -169,17 +275,31 @@ def main():
         """Report job - generates complete report and sends notification with action"""
         logger.info("Starting report job")
         try:
-            # Generate complete report and notify with action
+            # Get latest check data
             ts, pages = get_latest_check()
-            generate_html_report(ts, pages, output_path)
+            if not pages:
+                logger.warning("No check data available for report generation")
+                return
+            
+            # Determine connectivity status from latest check
+            # (This is a simplified approach - in practice you might want to query the DB)
+            connectivity_ok = last_connectivity_status
+            
+            # Generate complete report and notify with action
+            generate_html_report(ts, pages, connectivity_ok, output_path)
             logger.info(f"Complete report generated for {len(pages)} pages")
+            
+            # Calculate summary for notification
+            failed_count = sum(1 for p in pages if not p['ok'])
+            connectivity_status = "✓" if connectivity_ok else "✗"
             
             title = f"Monitoring Report - {time.strftime('%Y-%m-%d %H:%M:%S')}"
             
             # Send notification with action to open report
             send_report_notification(title, output_path)
 
-            logger.info(f"Report notification sent at {datetime.utcnow().isoformat()}")
+            logger.info(f"Report notification sent: {len(pages)} pages, {failed_count} failures, "
+                       f"connectivity: {connectivity_status}")
             
         except Exception as e:
             logger.error(f"Error during report job: {e}", exc_info=True)

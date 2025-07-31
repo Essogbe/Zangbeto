@@ -4,6 +4,7 @@
 Zangbéto Website Crawler and Monitoring Module
 
 This module provides comprehensive website monitoring capabilities including:
+- Internet connectivity verification before checks
 - Recursive website crawling with configurable depth
 - HTTP health checks and response time measurement
 - SQLite database storage for historical data
@@ -61,6 +62,113 @@ SITES_FILE = "sites.txt"
 DEPTH = 2  # Website exploration depth
 NOTIF_TITLE = "Zangbéto Monitor"
 DEFAULT_TIMEOUT = 10  # Default HTTP timeout in seconds
+
+# Connectivity test endpoints (reliable services for internet check)
+CONNECTIVITY_ENDPOINTS = [
+    "https://www.google.com",
+    "https://www.cloudflare.com",
+    "https://httpbin.org/get",
+    "https://www.github.com"
+]
+
+
+def check_internet_connectivity(timeout: int = 5, max_retries: int = 2) -> bool:
+    """
+    Verify internet connectivity before running site checks.
+    
+    Tests connectivity by attempting to reach multiple reliable endpoints.
+    Uses a shorter timeout and multiple fallbacks to quickly determine
+    if internet access is available.
+    
+    Args:
+        timeout (int): Timeout for each connectivity test in seconds.
+        max_retries (int): Maximum number of endpoints to try.
+    
+    Returns:
+        bool: True if internet connectivity is available, False otherwise.
+    
+    Example:
+        >>> if check_internet_connectivity():
+        ...     print("Internet is available, proceeding with checks")
+        ... else:
+        ...     print("No internet connection, skipping checks")
+    
+    Note:
+        - Tests multiple endpoints to avoid false negatives
+        - Uses short timeout to fail fast
+        - Logs connectivity status for debugging
+        - Should be called before any site monitoring
+    """
+    logger.debug("Checking internet connectivity...")
+    
+    tested_endpoints = 0
+    for endpoint in CONNECTIVITY_ENDPOINTS:
+        if tested_endpoints >= max_retries:
+            break
+            
+        try:
+            tested_endpoints += 1
+            logger.debug(f"Testing connectivity via: {endpoint}")
+            
+            response = requests.get(
+                endpoint, 
+                timeout=timeout,
+                allow_redirects=True
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"Internet connectivity confirmed via {endpoint}")
+                return True
+                
+        except (requests.exceptions.RequestException, Exception) as e:
+            logger.debug(f"Connectivity test failed for {endpoint}: {e}")
+            continue
+    
+    logger.error(f"No internet connectivity detected after testing {tested_endpoints} endpoints")
+    return False
+
+
+def wait_for_connectivity(max_wait_minutes: int = 10, check_interval: int = 30) -> bool:
+    """
+    Wait for internet connectivity to become available.
+    
+    Continuously checks for internet connectivity at regular intervals
+    until it's available or the maximum wait time is reached.
+    
+    Args:
+        max_wait_minutes (int): Maximum time to wait in minutes.
+        check_interval (int): Interval between checks in seconds.
+    
+    Returns:
+        bool: True if connectivity was established, False if timeout reached.
+    
+    Example:
+        >>> if wait_for_connectivity(max_wait_minutes=5):
+        ...     print("Connectivity restored, continuing with monitoring")
+        ... else:
+        ...     print("Connectivity timeout, skipping this check cycle")
+    
+    Note:
+        - Useful for handling temporary network outages
+        - Logs waiting progress for user awareness
+        - Can be interrupted with KeyboardInterrupt
+    """
+    start_time = time.time()
+    max_wait_seconds = max_wait_minutes * 60
+    
+    logger.info(f"Waiting for internet connectivity (max {max_wait_minutes} minutes)...")
+    
+    while (time.time() - start_time) < max_wait_seconds:
+        if check_internet_connectivity():
+            wait_time = round(time.time() - start_time, 1)
+            logger.info(f"Internet connectivity restored after {wait_time} seconds")
+            return True
+        
+        logger.debug(f"Still no connectivity, waiting {check_interval}s before retry...")
+        time.sleep(check_interval)
+    
+    logger.warning(f"Internet connectivity not restored within {max_wait_minutes} minutes")
+    return False
 
 
 def load_sites(file_path: str = SITES_FILE) -> List[str]:
@@ -355,7 +463,8 @@ def init_db(db_path: str = DB_PATH) -> None:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS checks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL
+                timestamp TEXT NOT NULL,
+                connectivity_check BOOLEAN DEFAULT 1
             )
         """)
         
@@ -383,7 +492,7 @@ def init_db(db_path: str = DB_PATH) -> None:
         raise
 
 
-def save_results(results: List[Dict], db_path: str = DB_PATH) -> str:
+def save_results(results: List[Dict], connectivity_ok: bool = True, db_path: str = DB_PATH) -> str:
     """
     Save monitoring results to the database.
     
@@ -392,6 +501,7 @@ def save_results(results: List[Dict], db_path: str = DB_PATH) -> str:
     
     Args:
         results (List[Dict]): List of check results from explore_site() or check_url().
+        connectivity_ok (bool): Whether internet connectivity was available during check.
         db_path (str): Path to the SQLite database file.
                       Defaults to DB_PATH constant.
     
@@ -403,13 +513,14 @@ def save_results(results: List[Dict], db_path: str = DB_PATH) -> str:
     
     Example:
         >>> results = explore_site("https://example.com")
-        >>> timestamp = save_results(results)
+        >>> timestamp = save_results(results, connectivity_ok=True)
         >>> print(f"Results saved with timestamp: {timestamp}")
     
     Note:
         - Creates a new check session for each save operation
         - All results are saved atomically (transaction)
         - Returns timestamp for reference and reporting
+        - Records connectivity status for analysis
     """
     if not results:
         logger.warning("No results to save")
@@ -423,7 +534,8 @@ def save_results(results: List[Dict], db_path: str = DB_PATH) -> str:
         
         # Create new check session
         timestamp = datetime.utcnow().isoformat()
-        cursor.execute("INSERT INTO checks (timestamp) VALUES (?)", (timestamp,))
+        cursor.execute("INSERT INTO checks (timestamp, connectivity_check) VALUES (?, ?)", 
+                      (timestamp, connectivity_ok))
         check_id = cursor.lastrowid
         
         # Save all page results
@@ -614,7 +726,7 @@ def get_history_12h(db_path: str = DB_PATH) -> Tuple[List[str], List[int], List[
         return [], [], []
 
 
-def generate_html_report(timestamp: str, pages: List[Dict], output_path: str = OUTPUT_HTML) -> None:
+def generate_html_report(timestamp: str, pages: List[Dict], connectivity_ok: bool = True, output_path: str = OUTPUT_HTML) -> None:
     """
     Generate an HTML monitoring report with interactive charts.
     
@@ -623,10 +735,12 @@ def generate_html_report(timestamp: str, pages: List[Dict], output_path: str = O
     - Status code distribution chart
     - 12-hour trend analysis
     - Detailed page-by-page results
+    - Connectivity status indicator
     
     Args:
         timestamp (str): Timestamp of the check being reported.
         pages (List[Dict]): List of page check results.
+        connectivity_ok (bool): Whether internet connectivity was available.
         output_path (str): Path where the HTML report should be saved.
                           Defaults to OUTPUT_HTML constant.
     
@@ -636,7 +750,7 @@ def generate_html_report(timestamp: str, pages: List[Dict], output_path: str = O
     
     Example:
         >>> timestamp, pages = get_latest_check()
-        >>> generate_html_report(timestamp, pages, "monitor_report.html")
+        >>> generate_html_report(timestamp, pages, True, "monitor_report.html")
         >>> print("Report generated successfully")
     
     Note:
@@ -676,6 +790,7 @@ def generate_html_report(timestamp: str, pages: List[Dict], output_path: str = O
             # Basic info
             timestamp=timestamp,
             pages=pages,
+            connectivity_ok=connectivity_ok,
             
             # Summary stats
             total_pages=total_pages,
@@ -704,58 +819,98 @@ def generate_html_report(timestamp: str, pages: List[Dict], output_path: str = O
         raise
 
 
-def notify_if_fail(pages: List[Dict], title: str = NOTIF_TITLE) -> None:
+def notify_if_fail(pages: List[Dict], connectivity_ok: bool = True, title: str = NOTIF_TITLE) -> None:
     """
     Send system notification if any pages failed their health checks.
     
     Analyzes check results and sends a desktop notification listing
     all failed pages with their status codes or error messages.
+    Includes connectivity status in the notification.
     
     Args:
         pages (List[Dict]): List of page check results.
+        connectivity_ok (bool): Whether internet connectivity was available.
         title (str): Notification title. Defaults to NOTIF_TITLE constant.
     
     Example:
         >>> timestamp, pages = get_latest_check()
-        >>> notify_if_fail(pages, "Website Monitor Alert")
+        >>> notify_if_fail(pages, True, "Website Monitor Alert")
     
     Note:
-        - Only sends notification if there are failures
+        - Only sends notification if there are failures or connectivity issues
         - Uses system notify-send command (Linux desktop)
         - Lists up to 10 failed pages to avoid notification overflow
         - Gracefully handles notify-send unavailability
+        - Distinguishes between connectivity and site-specific failures
     """
     failed_pages = [p for p in pages if not p["ok"]]
     
-    if not failed_pages:
-        logger.debug("All pages are healthy, no notification needed")
+    # No notification needed if everything is fine
+    if not failed_pages and connectivity_ok:
+        logger.debug("All pages are healthy and connectivity is good, no notification needed")
         return
     
     try:
-        logger.warning(f"Found {len(failed_pages)} failed pages, sending notification")
+        # Prepare notification message
+        message_parts = []
         
-        # Limit to first 10 failures to avoid overwhelming notification
-        display_failures = failed_pages[:10]
-        more_failures = len(failed_pages) - len(display_failures)
+        # Add connectivity warning if needed
+        if not connectivity_ok:
+            message_parts.append("Sites DOWN:\n" + "\n".join(failure_list))
+            if more_failures > 0:
+                message_parts.append(f"... and {more_failures} more")
         
-        # Format failure list
-        failure_list = []
-        for page in display_failures:
-            status = page.get('status_code', '?')
-            if page.get('error'):
-                status = f"Error: {page['error'][:30]}"
-            failure_list.append(f"• {page['url']} → {status}")
-        
-        message = "Sites DOWN:\n" + "\n".join(failure_list)
-        if more_failures > 0:
-            message += f"\n... and {more_failures} more"
+        message = "\n".join(message_parts)
         
         # Send system notification
         os.system(f'notify-send "{title}" "{message}"')
-        logger.info(f"Failure notification sent for {len(failed_pages)} failed pages")
+        
+        if failed_pages:
+            logger.info(f"Failure notification sent for {len(failed_pages)} failed pages")
+        if not connectivity_ok:
+            logger.info("Connectivity issue notification sent")
         
     except Exception as e:
         logger.error(f"Failed to send notification: {e}")
+
+
+def save_connectivity_log(connectivity_ok: bool, db_path: str = DB_PATH) -> None:
+    """
+    Save connectivity check result even when no site checks are performed.
+    
+    Records connectivity status in the database for tracking network
+    availability patterns and debugging monitoring issues.
+    
+    Args:
+        connectivity_ok (bool): Whether internet connectivity was available.
+        db_path (str): Path to the SQLite database file.
+    
+    Example:
+        >>> save_connectivity_log(False)  # Log connectivity failure
+    
+    Note:
+        - Creates a check record with no associated pages
+        - Useful for tracking network outages
+        - Helps distinguish between site failures and connectivity issues
+    """
+    try:
+        logger.debug(f"Logging connectivity status: {connectivity_ok}")
+        
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Create check record with connectivity status
+        timestamp = datetime.utcnow().isoformat()
+        cursor.execute("INSERT INTO checks (timestamp, connectivity_check) VALUES (?, ?)", 
+                      (timestamp, connectivity_ok))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.debug("Connectivity status logged successfully")
+        
+    except sqlite3.Error as e:
+        logger.error(f"Failed to log connectivity status: {e}")
 
 
 def job() -> None:
@@ -763,14 +918,16 @@ def job() -> None:
     Main monitoring job that performs a complete check cycle.
     
     Executes a full monitoring cycle including:
-    1. Database initialization
-    2. Loading sites to monitor
-    3. Exploring each site recursively
-    4. Saving results to database
-    5. Generating HTML report
-    6. Sending failure notifications
+    1. Internet connectivity verification
+    2. Database initialization
+    3. Loading sites to monitor
+    4. Exploring each site recursively (if connectivity is available)
+    5. Saving results to database
+    6. Generating HTML report
+    7. Sending failure notifications
     
     This function is designed to be called by schedulers or as a standalone check.
+    Includes connectivity checking to avoid false positives when internet is unavailable.
     
     Example:
         >>> job()  # Run a single check cycle
@@ -784,11 +941,36 @@ def job() -> None:
         - Logs progress and timing information
         - Generates reports even if some sites fail
         - Safe to run concurrently (uses separate database connections)
+        - Skips site checks if no internet connectivity is detected
     """
     start_time = time.time()
     logger.info("Starting monitoring job")
     
     try:
+        # Check internet connectivity first
+        connectivity_ok = check_internet_connectivity()
+        
+        if not connectivity_ok:
+            logger.warning("No internet connectivity detected, skipping site checks")
+            
+            # Initialize database and save connectivity status
+            init_db()
+            save_connectivity_log(connectivity_ok)
+            
+            # Send notification about connectivity issue
+            notify_if_fail([], connectivity_ok)
+            
+            # Try to wait for connectivity (optional)
+            logger.info("Attempting to wait for connectivity...")
+            if wait_for_connectivity(max_wait_minutes=2):
+                logger.info("Connectivity restored, proceeding with checks")
+                connectivity_ok = True
+            else:
+                logger.warning("Connectivity not restored, skipping this check cycle")
+                elapsed_time = round(time.time() - start_time, 2)
+                print(f"[{datetime.utcnow().isoformat()}] Check skipped - no internet connectivity ({elapsed_time}s)")
+                return
+        
         # Initialize database
         init_db()
         
@@ -814,28 +996,31 @@ def job() -> None:
             logger.warning("No pages to check")
             return
         
-        # Save results
-        timestamp = save_results(all_pages)
+        # Save results with connectivity status
+        timestamp = save_results(all_pages, connectivity_ok)
         
         # Get latest results for reporting
         _, latest_pages = get_latest_check()
         
-        # Generate HTML report
-        generate_html_report(timestamp, latest_pages)
+        # Generate HTML report with connectivity status
+        generate_html_report(timestamp, latest_pages, connectivity_ok)
         
-        # Send notifications for failures
-        notify_if_fail(latest_pages)
+        # Send notifications for failures or connectivity issues
+        notify_if_fail(latest_pages, connectivity_ok)
         
         # Log job completion
         elapsed_time = round(time.time() - start_time, 2)
         total_pages = len(all_pages)
         failed_pages = sum(1 for p in latest_pages if not p['ok'])
         
+        connectivity_status = "✓" if connectivity_ok else "✗"
         logger.info(f"Monitoring job completed in {elapsed_time}s: "
-                   f"{total_pages} pages checked, {failed_pages} failures")
+                   f"{total_pages} pages checked, {failed_pages} failures, "
+                   f"connectivity: {connectivity_status}")
         
         print(f"[{datetime.utcnow().isoformat()}] Check completed - "
-              f"{total_pages} pages, {failed_pages} failures, report updated")
+              f"{total_pages} pages, {failed_pages} failures, "
+              f"connectivity: {connectivity_status}, report updated")
         
     except Exception as e:
         logger.error(f"Monitoring job failed: {e}", exc_info=True)
@@ -846,7 +1031,8 @@ if __name__ == "__main__":
     Standalone execution mode for the crawler module.
     
     When run directly, performs an immediate check and then schedules
-    recurring checks every 30 minutes.
+    recurring checks every 30 minutes. Includes connectivity checking
+    to handle network outages gracefully.
     """
     logger.info("Starting Zangbéto website monitoring service")
     
@@ -868,4 +1054,6 @@ if __name__ == "__main__":
         print("\nMonitoring service stopped.")
     except Exception as e:
         logger.error(f"Monitoring service crashed: {e}", exc_info=True)
-        raise
+        raise⚠️ Internet connectivity issues detected!")
+            
+      
