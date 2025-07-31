@@ -230,6 +230,29 @@ OR
 
 This setup ensures Zangbéto runs automatically on system boot and restarts on failures.
 
+## What About Testing APIs (REST APIs for Now)?
+
+That’s a great question because nowadays, most modern web applications are split into two main components: the backend (API) and the frontend.
+
+When it comes to monitoring or testing APIs in production, there are generally two main approaches:
+
+1. **Direct API testing**, where requests are made directly to the live endpoints.  
+   This method carries risks such as:
+   - Modifying production data
+   - Triggering authentication or authorization issues  
+   While manageable, it can raise security and data integrity concerns.
+
+2. **Internal health-check endpoints**, where one or more special routes are created specifically for monitoring purposes.  
+   These endpoints:
+   - Perform internal checks on other routes or logic
+   - Return a summary or detailed result about system health  
+
+The second approach is often safer and cleaner:
+- No side effects on production data
+- Fewer security concerns
+- Easier to automate and monitor
+
+ Future versions of this project aim to support both website and API monitoring, including health-check mechanisms for REST APIs.
 
 
 ## 📝 Roadmap (v2+)
@@ -258,7 +281,7 @@ This setup ensures Zangbéto runs automatically on system boot and restarts on f
 * Multi-user authentication and role management
 * API monitoring with JSON/XML validation
 * Protected sites monitoring (login flows)
-* Distributed monitoring from multiple locations
+
 
 **Platform & Deployment:**
 * Windows support and native installers
