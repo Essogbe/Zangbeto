@@ -77,6 +77,8 @@ Zangbeto/
 ├── history.db                 # SQLite database for check history
 ├── requirements.txt           # Python dependencies
 └── README.md                  # Documentation and usage guide
+--  setup.sh                   # Bash  File for setuping project and configure systemd automatically
+
 ```
 
 ## Quick Start Guide
@@ -194,6 +196,13 @@ python main.py --one-shot --frequency 1 --output test_report.html
 
 For execution in background, integrate with systemd for automatic startup and management:
 
+0. **You can setup automatically with `setup.sh`**
+```bash
+chmod +x setup.sh
+sudo ./setup.sh #
+```
+OR 
+
 1. **Create service files** - Copy from `systemd/` folder:
    ```bash
    sudo cp systemd/zangbeto.service /etc/systemd/system/
@@ -221,6 +230,8 @@ For execution in background, integrate with systemd for automatic startup and ma
 
 This setup ensures Zangbéto runs automatically on system boot and restarts on failures.
 
+
+
 ## 📝 Roadmap (v2+)
 
 **Core Improvements:**
@@ -230,6 +241,7 @@ This setup ensures Zangbéto runs automatically on system boot and restarts on f
 * Advanced retry logic and timeout handling
 
 **Reporting & Visualization:**
+* Improving the default UI report
 * Automatic PDF export
 * Real-time web dashboard (Flask/React)
 * Custom alert thresholds and rules

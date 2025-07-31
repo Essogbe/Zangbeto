@@ -1,6 +1,6 @@
 # /etc/systemd/system/monitor.service
 [Unit]
-Description=Zangbetor Monitoring Service
+Description=Zangbetor-Monitoring-Service
 After=network.target
 
 [Service]
