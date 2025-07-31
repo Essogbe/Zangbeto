@@ -254,6 +254,15 @@ The second approach is often safer and cleaner:
 
  Future versions of this project aim to support both website and API monitoring, including health-check mechanisms for REST APIs.
 
+## Alternatives
+
+Yeah, there are plenty of alternatives out there. For medium to large teams, robust monitoring and alerting tools like **[Grafana](https://github.com/grafana/grafana)**, **[Prometheus](https://github.com/prometheus/prometheus)**, and others are already widely used—and they do their job very well.
+
+This project is not meant to be a drop-in replacement for those tools (just look at how small it is, haha). Instead, it’s a lightweight solution I built to quickly check if my websites are down, even quietly in the background.
+
+That said, I’m always open to better suggestions and contributions.
+
+
 
 ## 📝 Roadmap (v2+)
 
@@ -272,7 +281,7 @@ The second approach is often safer and cleaner:
 * Custom templates definition and usage
 
 **Notifications & Integrations:**
-* SMS, Discord, Teams, PagerDuty support
+* Other channels Support (SMS, Discord, Teams ...)
 * Webhook support for custom integrations
 * Alert escalation policies
 * Maintenance windows and alert suppression
