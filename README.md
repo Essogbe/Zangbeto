@@ -152,7 +152,7 @@ TELEGRAM_CHAT_ID=123456789
 
 ## Usage
 
-### Continuous Monitoring (Production)
+### Continuous Monitoring 
 ```bash
 # Start continuous monitoring (runs forever until Ctrl+C)
 python main.py
@@ -298,7 +298,7 @@ That said, I’m always open to better suggestions and contributions.
 
 
 **Data Management:**
-* Advanced retention policies and data purging
+* Advanced retention policies and data purging 
 
 * Performance metrics and trends analysis
 
