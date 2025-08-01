@@ -199,7 +199,7 @@ For execution in background, integrate with systemd for automatic startup and ma
 0. **You can setup automatically with `setup.sh`**
 ```bash
 chmod +x setup.sh
-sudo ./setup.sh #
+./setup.sh #
 ```
 OR 
 
