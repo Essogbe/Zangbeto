@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rapport de Monitoring Avancé - {{ period_label }}</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 1rem; max-width: 1200px; margin: auto; background: #f8f9fa; }
+        .header { text-align: center; background: white; padding: 2rem; border-radius: 8px; margin-bottom: 2rem; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .metrics-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+        .metric-card { background: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; }
+        .metric-value { font-size: 2rem; font-weight: bold; color: #2563eb; }
+        .metric-label { color: #6b7280; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        
+        .site-section { background: white; margin-bottom: 2rem; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .site-header { background: #f3f4f6; padding: 1rem; border-bottom: 1px solid #e5e7eb; display: flex; justify-content: space-between; align-items: center; }
+        .site-name { font-weight: bold; font-size: 1.125rem; }
+        .availability-badge { padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.875rem; font-weight: 500; }
+        .availability-high { background: #dcfce7; color: #166534; }
+        .availability-medium { background: #fef3c7; color: #92400e; }
+        .availability-low { background: #fecaca; color: #991b1b; }
+        
+        .chart-container { padding: 1rem; }
+        .pages-table { width: 100%; margin-top: 1rem; }
+        .pages-table th, .pages-table td { padding: 0.75rem; text-align: left; border-bottom: 1px solid #e5e7eb; }
+        .pages-table thead { background: #f9fafb; }
+        
+        .status-ok { color: #059669; font-weight: 500; }
+        .status-error { color: #dc2626; font-weight: 500; }
+        
+        .incident-list { max-height: 200px; overflow-y: auto; margin-top: 1rem; }
+        .incident-item { padding: 0.5rem; background: #fef2f2; border-left: 4px solid #ef4444; margin-bottom: 0.5rem; border-radius: 0 4px 4px 0; }
+        
+        @media (max-width: 768px) {
+            .metrics-grid { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+            .site-header { flex-direction: column; gap: 0.5rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🌙 Zangbéto - Rapport de Monitoring</h1>
+        <p><strong>{{ period_label }}</strong> • {{ timestamp }}</p>
+        {% if not connectivity_ok %}
+        <div style="background: #fef2f2; color: #991b1b; padding: 0.75rem; border-radius: 4px; margin-top: 1rem;">
+            ⚠️ Problèmes de connectivité détectés durant la période
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Métriques globales -->
+    <div class="metrics-grid">
+        <div class="metric-card">
+            <div class="metric-value">{{ site_stats|length }}</div>
+            <div class="metric-label">Sites surveillés</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-value">{{ total_pages }}</div>
+            <div class="metric-label">Pages vérifiées</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-value">{{ "%.1f"|format(overall_success_rate) }}%</div>
+            <div class="metric-label">Taux de succès</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-value">{{ "%.2f"|format(avg_response_time) }}s</div>
+            <div class="metric-label">Temps de réponse moyen</div>
+        </div>
+    </div>
+
+    <!-- Vue globale historique -->
+    {% if hist_labels %}
+    <div class="site-section">
+        <div class="site-header">
+            <div class="site-name">📊 Tendance globale (12h)</div>
+        </div>
+        <div class="chart-container">
+            <div id="global_trend_chart" style="height: 400px;"></div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Analyse par site -->
+    {% for domain, stats in site_stats.items() %}
+    <div class="site-section">
+        <div class="site-header">
+            <div class="site-name">🌐 {{ domain }}</div>
+            <div class="availability-badge {% if stats.success_rate >= 95 %}availability-high{% elif stats.success_rate >= 80 %}availability-medium{% else %}availability-low{% endif %}">
+                {{ "%.1f"|format(stats.success_rate) }}% disponible
+            </div>
+        </div>
+        
+        <div class="chart-container">
+            <!-- Métriques du site -->
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+                <div style="text-align: center;">
+                    <div style="font-size: 1.5rem; font-weight: bold; color: #059669;">{{ stats.successful_pages }}</div>
+                    <div style="font-size: 0.875rem; color: #6b7280;">Pages OK</div>
+                </div>
+                <div style="text-align: center;">
+                    <div style="font-size: 1.5rem; font-weight: bold; color: #dc2626;">{{ stats.failed_pages }}</div>
+                    <div style="font-size: 0.875rem; color: #6b7280;">Pages KO</div>
+                </div>
+                <div style="text-align: center;">
+                    <div style="font-size: 1.5rem; font-weight: bold; color: #2563eb;">{{ "%.2f"|format(stats.avg_response_time) }}s</div>
+                    <div style="font-size: 0.875rem; color: #6b7280;">Temps moyen</div>
+                </div>
+            </div>
+
+            <!-- Graphique des codes de statut pour ce site -->
+            <div id="site_status_{{ loop.index }}" style="height: 300px;"></div>
+
+            <!-- Historique du site si disponible -->
+            {% if domain in site_trends %}
+            <div id="site_trend_{{ loop.index }}" style="height: 300px; margin-top: 1rem;"></div>
+            {% endif %}
+
+            <!-- Tableau des pages du site -->
+            <table class="pages-table">
+                <thead>
+                    <tr>
+                        <th>Page</th>
+                        <th>Statut</th>
+                        <th>Temps (s)</th>
+                        <th>Erreur</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for page in stats.pages %}
+                <tr>
+                    <td>{{ page.url }}</td>
+                    <td>
+                        {% if page.ok %}
+                        <span class="status-ok">✓ {{ page.status_code }}</span>
+                        {% else %}
+                        <span class="status-error">✗ {{ page.status_code or 'N/A' }}</span>
+                        {% endif %}
+                    </td>
+                    <td>{{ "%.3f"|format(page.response_time) if page.response_time else '-' }}</td>
+                    <td>{{ page.error or '' }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+
+            <!-- Incidents récents pour ce site -->
+            {% if historical_stats and domain in historical_stats.by_site and historical_stats.by_site[domain].incidents %}
+            <h4>🚨 Incidents récents</h4>
+            <div class="incident-list">
+                {% for incident in historical_stats.by_site[domain].incidents[-5:] %}
+                <div class="incident-item">
+                    <strong>{{ incident.timestamp[:19] }}</strong> - {{ incident.url }}<br>
+                    <small>{{ incident.error or ('Code ' + incident.status_code|string) }}</small>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+
+    <script>
+        // Configuration Plotly commune
+        const plotlyConfig = {responsive: true, displayModeBar: false};
+        
+        // Graphique de tendance globale
+        {% if hist_labels %}
+        const globalLabels = {{ hist_labels|tojson }};
+        const globalUp = {{ hist_up|tojson }};
+        const globalDown = {{ hist_down|tojson }};
+        
+        Plotly.newPlot('global_trend_chart', [
+            {x: globalLabels, y: globalUp, type: 'bar', name: 'UP', marker: {color: '#10b981'}},
+            {x: globalLabels, y: globalDown, type: 'bar', name: 'DOWN', marker: {color: '#ef4444'}}
+        ], {
+            barmode: 'stack',
+            title: 'Évolution globale par heure',
+            xaxis: {title: 'Heure'},
+            yaxis: {title: 'Nombre de vérifications'}
+        }, plotlyConfig);
+        {% endif %}
+
+        // Graphiques par site
+        {% for domain, stats in site_stats.items() %}
+        // Codes de statut pour {{ domain }}
+        const statusData{{ loop.index }} = {{ stats.status_codes|tojson }};
+        const statusLabels{{ loop.index }} = Object.keys(statusData{{ loop.index }});
+        const statusCounts{{ loop.index }} = Object.values(statusData{{ loop.index }});
+        
+        if (statusLabels{{ loop.index }}.length > 0) {
+            Plotly.newPlot('site_status_{{ loop.index }}', [{
+                labels: statusLabels{{ loop.index }},
+                values: statusCounts{{ loop.index }},
+                type: 'pie',
+                marker: {
+                    colors: statusLabels{{ loop.index }}.map(code => 
+                        code.startsWith('2') ? '#10b981' : 
+                        code.startsWith('3') ? '#f59e0b' : 
+                        code.startsWith('4') ? '#ef4444' : 
+                        code.startsWith('5') ? '#dc2626' : '#6b7280'
+                    )
+                }
+            }], {
+                title: `Répartition des codes de statut - {{ domain }}`,
+                showlegend: true
+            }, plotlyConfig);
+        }
+
+        // Tendance du site si disponible
+        {% if domain in site_trends %}
+        const trendData{{ loop.index }} = {{ site_trends[domain]|tojson }};
+        const trendLabels{{ loop.index }} = trendData{{ loop.index }}.timestamps.map(t => new Date(t).toLocaleString('fr-FR'));
+        
+        Plotly.newPlot('site_trend_{{ loop.index }}', [
+            {
+                x: trendLabels{{ loop.index }},
+                y: trendData{{ loop.index }}.status_timeline,
+                type: 'scatter',
+                mode: 'lines+markers',
+                name: 'Statut',
+                line: {color: '#2563eb', width: 2},
+                yaxis: 'y'
+            },
+            {
+                x: trendLabels{{ loop.index }},
+                y: trendData{{ loop.index }}.response_times,
+                type: 'scatter',
+                mode: 'lines',
+                name: 'Temps de réponse (s)',
+                line: {color: '#f59e0b', width: 1},
+                yaxis: 'y2'
+            }
+        ], {
+            title: `Évolution dans le temps - {{ domain }}`,
+            xaxis: {title: 'Temps'},
+            yaxis: {title: 'Statut (1=OK, 0=KO)', side: 'left'},
+            yaxis2: {title: 'Temps de réponse (s)', side: 'right', overlaying: 'y'}
+        }, plotlyConfig);
+        {% endif %}
+        {% endfor %}
+    </script>
+</body>
+</html>

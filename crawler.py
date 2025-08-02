@@ -35,6 +35,7 @@ Example:
 """
 
 import os
+import subprocess
 import time
 import json
 import sqlite3
@@ -42,12 +43,14 @@ import requests
 import schedule
 import plotly.graph_objs as go
 import logging
+
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from collections import Counter
 from jinja2 import Environment, FileSystemLoader
-from typing import List, Dict, Tuple, Optional, Set
+from typing import List, Dict, Tuple, Optional, Set, Union
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -56,12 +59,17 @@ logger = logging.getLogger(__name__)
 # Configuration constants
 DB_PATH = "history.db"
 TEMPLATE_PATH = "templates"
-TEMPLATE_NAME = "report_template.html"
+TEMPLATE_NAME = "enhanced_report_template.html"
 OUTPUT_HTML = "rapport.html"
 SITES_FILE = "sites.txt"
 DEPTH = 2  # Website exploration depth
 NOTIF_TITLE = "Zangbéto Monitor"
 DEFAULT_TIMEOUT = 10  # Default HTTP timeout in seconds
+
+
+sqlite3.register_adapter(datetime, lambda dt: dt.isoformat(" "))
+sqlite3.register_converter("timestamp", lambda s: datetime.fromisoformat(s.decode("utf-8")))
+
 
 # Connectivity test endpoints (reliable services for internet check)
 CONNECTIVITY_ENDPOINTS = [
@@ -70,6 +78,8 @@ CONNECTIVITY_ENDPOINTS = [
     "https://httpbin.org/get",
     "https://www.github.com"
 ]
+
+
 
 
 def check_internet_connectivity(timeout: int = 5, max_retries: int = 2) -> bool:
@@ -432,42 +442,31 @@ def explore_site(base_url: str, max_depth: int = DEPTH) -> List[Dict]:
 def init_db(db_path: str = DB_PATH) -> None:
     """
     Initialize the SQLite database for storing monitoring results.
-    
-    Creates the necessary tables if they don't exist:
-    - checks: Stores check sessions with timestamps
-    - pages: Stores individual page check results linked to check sessions
-    
-    Args:
-        db_path (str): Path to the SQLite database file. 
-                      Defaults to DB_PATH constant.
-    
-    Raises:
-        sqlite3.Error: If database operations fail.
-    
-    Example:
-        >>> init_db("monitoring.db")
-        >>> print("Database initialized successfully")
-    
-    Note:
-        - Safe to call multiple times (CREATE TABLE IF NOT EXISTS)
-        - Creates foreign key relationship between checks and pages
-        - Database file is created automatically if it doesn't exist
+    Ensures the 'connectivity_check' column exists in the 'checks' table.
     """
     try:
+
+        sqlite3.register_adapter(datetime, lambda dt: dt.isoformat(" "))
+        sqlite3.register_converter("timestamp", lambda s: datetime.fromisoformat(s.decode("utf-8")))
         logger.info(f"Initializing database: {db_path}")
-        
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        
+
         # Create checks table for monitoring sessions
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS checks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp TEXT NOT NULL,
-                connectivity_check BOOLEAN DEFAULT 1
+                timestamp TIMESTAMP NOT NULL
             )
         """)
-        
+
+        # Add connectivity_check column if missing
+        cursor.execute("PRAGMA table_info(checks)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "connectivity_check" not in columns:
+            logger.info("Adding missing column 'connectivity_check' to 'checks' table")
+            cursor.execute("ALTER TABLE checks ADD COLUMN connectivity_check BOOLEAN DEFAULT 1")
+
         # Create pages table for individual page results
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS pages (
@@ -481,12 +480,11 @@ def init_db(db_path: str = DB_PATH) -> None:
                 FOREIGN KEY(check_id) REFERENCES checks(id)
             )
         """)
-        
+
         conn.commit()
         conn.close()
-        
         logger.info("Database initialization completed successfully")
-        
+
     except sqlite3.Error as e:
         logger.error(f"Database initialization failed: {e}")
         raise
@@ -524,8 +522,8 @@ def save_results(results: List[Dict], connectivity_ok: bool = True, db_path: str
     """
     if not results:
         logger.warning("No results to save")
-        return datetime.utcnow().isoformat()
-    
+        return datetime.now().isoformat()
+
     try:
         logger.info(f"Saving {len(results)} results to database")
         
@@ -533,8 +531,8 @@ def save_results(results: List[Dict], connectivity_ok: bool = True, db_path: str
         cursor = conn.cursor()
         
         # Create new check session
-        timestamp = datetime.utcnow().isoformat()
-        cursor.execute("INSERT INTO checks (timestamp, connectivity_check) VALUES (?, ?)", 
+        timestamp = datetime.now().isoformat()
+        cursor.execute("INSERT INTO checks (timestamp, connectivity_check) VALUES (?, ?)",
                       (timestamp, connectivity_ok))
         check_id = cursor.lastrowid
         
@@ -635,6 +633,69 @@ def get_latest_check(db_path: str = DB_PATH) -> Tuple[Optional[str], List[Dict]]
         logger.error(f"Failed to retrieve latest check: {e}")
         return None, []
 
+def get_hourly_stats(data:Tuple,db_path: str = DB_PATH) -> Tuple[List[str], List[int], List[int]]:
+    """
+    Generate hourly UP/DOWN statistics from check history.
+    Analyzes check history to create hourly buckets showing the number
+    of successful vs failed page checks. Used for trend visualization
+    in monitoring reports. 
+
+    Args:
+        data (Tuple): Tuple containing:
+            - timestamps (List[str]): List of ISO timestamps for checks
+            - up_downs (List[bool]): List of booleans indicating success (True) or failure (False)
+        db_path (str): Path to the SQLite database file.    
+                        Defaults to DB_PATH constant.
+    Returns:    
+        Tuple[List[str], List[int], List[int]]: Tuple containing:
+            - labels (List[str]): Hour labels in HH:MM format
+            - up_counts (List[int]): Number of successful checks per hour
+            - down_counts (List[int]): Number of failed checks per hour
+    Example:
+        >>> data = (["2023-10-01T12:00:00", "2023-10-01T12:30:00"], [True, False])
+        >>> labels, ups, downs = get_hourly_stats(data)
+        >>> for i, label in enumerate(labels):
+        ...     print(f"{label}: {ups[i]} up, {downs[i]} down")
+    
+
+    """
+    logger.info("Generating hourly statistics from check history")
+    print(len(data))
+    timestamps, up_downs = data[0], data[1]
+    if not timestamps or not up_downs:
+        logger.info("No valid data available for hourly stats")
+        return [], [], []
+
+    # Group by hour
+    hourly_stats = {}
+    for timestamp_str, ok in zip(timestamps, up_downs):
+        try:
+            # Parse timestamp and round to hour
+            dt = datetime.fromisoformat(timestamp_str)
+            hour = dt.replace(minute=0, second=0, microsecond=0)
+            
+            # Initialize hour stats if needed
+            if hour not in hourly_stats:
+                hourly_stats[hour] = {"up": 0, "down": 0}
+            
+            # Count up/down
+            if ok:
+                hourly_stats[hour]["up"] += 1
+            else:
+                hourly_stats[hour]["down"] += 1
+                
+        except ValueError as e:
+            logger.warning(f"Skipping invalid timestamp: {timestamp_str}")
+            continue
+    
+    # Sort hours and extract data
+    sorted_hours = sorted(hourly_stats.keys())
+    labels = [hour.strftime("%H:%M") for hour in sorted_hours]
+    up_counts = [hourly_stats[hour]["up"] for hour in sorted_hours]
+    down_counts = [hourly_stats[hour]["down"] for hour in sorted_hours]
+    
+    logger.debug(f"Generated history for {len(labels)} hours")
+    return labels, up_counts, down_counts
 
 def get_history_12h(db_path: str = DB_PATH) -> Tuple[List[str], List[int], List[int]]:
     """
@@ -670,7 +731,7 @@ def get_history_12h(db_path: str = DB_PATH) -> Tuple[List[str], List[int], List[
         logger.debug("Generating 12-hour history statistics")
         
         # Calculate cutoff time (12 hours ago)
-        cutoff = datetime.utcnow() - timedelta(hours=12)
+        cutoff = datetime.now() - timedelta(hours=12)
         
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
@@ -726,14 +787,195 @@ def get_history_12h(db_path: str = DB_PATH) -> Tuple[List[str], List[int], List[
         return [], [], []
 
 
-def generate_html_report(timestamp: str, pages: List[Dict], connectivity_ok: bool = True, output_path: str = OUTPUT_HTML) -> None:
+
+
+def human_history_period(start: Union[datetime, str], end: Optional[Union[datetime, str]], db_path: str = DB_PATH) -> List[Dict]:
+
+    """    Retrieve check history for a specific time period.
+    Fetches all checks and their results within the specified start and end times.
+    Args:
+        start (Union[datetime, str]): Start of the period to retrieve.
+                                      Can be a datetime object or ISO string.
+        end (Optional[Union[datetime, str]]): End of the period to retrieve.
+                                    Can be a datetime object or ISO string.
+        db_path (str): Path to the SQLite database file.
+                      Defaults to DB_PATH constant.
+                          
+    Returns:
+        List[Dict]: List of check results within the specified period.
+                   Each result contains:
+                   - timestamp (str): ISO timestamp of the check
+                   - connectivity_check (bool): Whether connectivity was OK
+                   - pages (List[Dict]): List of page results with keys:
+                       - url (str): Page URL
+                       - status_code (int|None): HTTP status code
+                       - response_time (float|None): Response time in seconds
+                       - ok (bool): Success status
+                       - error (str|None): Error message if failed
+    
+    Example:
+        >>> start = datetime(2023, 10, 1, 0, 0)
+        >>> end = datetime(2023, 10, 2, 0, 0)
+        >>> history = human_history_period(start, end)
+        >>> print(f"Retrieved {len(history)} checks from {start} to {end}")
+    
+    Note:
+        - Returns all checks within the specified period
+        - Handles empty periods gracefully
+        - Useful for generating reports or analyzing trends over time
+    """
+    PERIODS = {
+    "today": (datetime.now().replace(hour=0, minute=0, second=0, microsecond=0), datetime.now()),
+    "yesterday": (datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1),
+                  datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)),
+    "this_week": (datetime.now() - timedelta(days=datetime.now().weekday()), datetime.now()),
+    "last_week": (datetime.now() - timedelta(days=datetime.now().weekday() + 7), datetime.now() - timedelta(days=datetime.now().weekday())),
+    "this_month": (datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0), datetime.now()),
+    "last_month": (datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1),
+                   datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0) - timedelta(days=datetime.now().day - 1)),
+    "last_24h": (datetime.now() - timedelta(hours=24), datetime.now()),
+    "last_7d": (datetime.now() - timedelta(days=7), datetime.now()),
+    "last_30d": (datetime.now() - timedelta(days=30), datetime.now())
+}
+    if isinstance(start, str):
+        if not end:
+            match start:
+                case "today":
+                    start, end = PERIODS["today"]
+                case "yesterday":
+                    start, end = PERIODS["yesterday"]
+                case "this_week":
+                    start, end = PERIODS["this_week"]
+                case "last_week":
+                    start, end = PERIODS["last_week"]
+                case "this_month":
+                    start, end = PERIODS["this_month"]
+                case "last_month":
+                    start, end = PERIODS["last_month"]
+                case "last_24h":
+                    start, end = PERIODS["last_24h"]
+                case "last_7d":
+                    start, end = PERIODS["last_7d"]
+                case "last_30d":
+                    start, end = PERIODS["last_30d"]
+                case _:
+                    raise ValueError(f"Unknown period: {start}")
+            return get_history_period(start, end, db_path)
+    elif isinstance(start, datetime):
+        if not end:
+            end = datetime.now()
+            return get_history_period(start, end, db_path)
+        elif isinstance(end, datetime):
+            return get_history_period(start, end, db_path)
+        else:
+            raise TypeError("End must be a datetime object or a valid period string")
+    else:
+        raise TypeError("Start must be a datetime object or a valid period string")
+
+def get_history_period(start: datetime, end: datetime, db_path: str = DB_PATH) -> List[Dict]:
+    """
+    Retrieve check history for a specific time period.
+    Fetches all checks and their results within the specified start and end times.
+    Args:
+        start (datetime): Start of the period to retrieve.
+        end (datetime): End of the period to retrieve.
+        db_path (str): Path to the SQLite database file.
+                      Defaults to DB_PATH constant.
+                          
+    Returns:
+        List[Dict]: List of check results within the specified period.
+                   Each result contains:
+                   - timestamp (str): ISO timestamp of the check
+                   - connectivity_check (bool): Whether connectivity was OK
+                   - pages (List[Dict]): List of page results with keys:
+                       - url (str): Page URL
+                       - status_code (int|None): HTTP status code
+                       - response_time (float|None): Response time in seconds
+                       - ok (bool): Success status
+                       - error (str|None): Error message if failed
+    
+    Example:
+        >>> start = datetime(2023, 10, 1, 0, 0)
+        >>> end = datetime(2023, 10, 2, 0, 0)
+        >>> history = get_history_period(start, end)
+        >>> print(f"Retrieved {len(history)} checks from {start} to {end}")
+    
+    Note:
+        - Returns all checks within the specified period
+        - Handles empty periods gracefully
+        - Useful for generating reports or analyzing trends over time
+    """
+    try:
+        logger.info(f"Retrieving history from {start.isoformat()} to {end.isoformat()}")
+
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Get all checks within the specified period
+        cursor.execute("""
+            SELECT ch.timestamp, ch.connectivity_check, p.url, p.status_code,
+                   p.response_time, p.ok, p.error
+            FROM checks ch
+            JOIN pages p ON ch.id = p.check_id
+            WHERE ch.timestamp >= ? AND ch.timestamp <= ?
+            ORDER BY ch.timestamp DESC
+        """, (start.isoformat(), end.isoformat()))
+        
+        data = cursor.fetchall()
+        conn.close()
+        #print(data)
+        print(len(data), "rows found in the database for the specified period")
+
+        if not data:
+            logger.info("No history data found for the specified period")
+            return []
+        
+        # Organize results by check session
+        history = []
+        current_check = None
+        urls = set()
+        
+        for row in data:
+            
+            timestamp, connectivity_check, url, status_code, response_time, ok, error = row
+            urls.add(url)
+            if current_check is None or current_check['timestamp'] != timestamp:
+                if current_check is not None:
+                    history.append(current_check)
+                
+                current_check = {
+                    "timestamp": timestamp,
+                    "connectivity_check": connectivity_check,
+                    "pages": []
+                }
+            
+            current_check['pages'].append({
+                "url": url,
+                "status_code": status_code,
+                "response_time": response_time,
+                "ok": bool(ok),
+                "error": error
+            })
+        
+        # Add the last check if it exists
+        if current_check is not None:
+            history.append(current_check)
+        
+        logger.debug(f"Retrieved {len(history)} checks from history")
+        logger.info(f"Found {len(urls)} unique URLs in the history")
+        return history
+        
+    except sqlite3.Error as e:
+        logger.error(f"Failed to retrieve history: {e}")
+        return []
+
+def generate_html_report(timestamp: str, pages: List[Dict], connectivity_ok: bool = True, output_path: str = OUTPUT_HTML, hourly_stats: Optional[Tuple[List[str], List[int], List[int]]] = None) -> None:
     """
     Generate an HTML monitoring report with interactive charts.
     
     Creates a comprehensive HTML report including:
     - Current status overview with success/failure counts
     - Status code distribution chart
-    - 12-hour trend analysis
     - Detailed page-by-page results
     - Connectivity status indicator
     
@@ -768,8 +1010,16 @@ def generate_html_report(timestamp: str, pages: List[Dict], connectivity_ok: boo
         status_labels = list(map(str, status_counter.keys()))
         status_counts = list(status_counter.values())
         
-        # Get 12-hour history for trend chart
-        history_labels, history_up, history_down = get_history_12h()
+        # Get 12-hour history for trend chart if hourly_stats not provided
+        if hourly_stats is None:
+            history_labels, history_up, history_down = get_history_12h()
+        else:
+            if hourly_stats is not None:
+                history_labels, history_up, history_down = hourly_stats
+            else:
+                history_labels, history_up, history_down = [], [], []
+            
+       
         
         # Calculate summary statistics
         total_pages = len(pages)
@@ -855,16 +1105,32 @@ def notify_if_fail(pages: List[Dict], connectivity_ok: bool = True, title: str =
         message_parts = []
         
         # Add connectivity warning if needed
-        if not connectivity_ok:
-            message_parts.append("Sites DOWN:\n" + "\n".join(failure_list))
-            if more_failures > 0:
-                message_parts.append(f"... and {more_failures} more")
+        if not connectivity_ok or failed_pages:
+            # Prepare a list of failed page details (limit to 10)
+            failure_list = [
+                f"{p['url']} ({p['status_code'] if p['status_code'] is not None else p['error']})"
+                for p in failed_pages
+            ]
+            max_display = 10
+            displayed_failures = failure_list[:max_display]
+            more_failures = len(failure_list) - max_display if len(failure_list) > max_display else 0
+
+            if not connectivity_ok:
+                message_parts.append("Internet connectivity issue detected.")
+            if failed_pages:
+                message_parts.append("Sites DOWN:\n" + "\n".join(displayed_failures))
+                if more_failures > 0:
+                    message_parts.append(f"... and {more_failures} more")
         
         message = "\n".join(message_parts)
         
-        # Send system notification
-        os.system(f'notify-send "{title}" "{message}"')
+        # Send system notification asynchronously
+        logger.info(f"Sending notification: {title} - {message}")
         
+        # Use subprocess to call notify-send (Linux desktop notification)
+        # This will not block the main thread
+        subprocess.Popen(["notify-send", title, message])
+
         if failed_pages:
             logger.info(f"Failure notification sent for {len(failed_pages)} failed pages")
         if not connectivity_ok:
@@ -1024,7 +1290,265 @@ def job() -> None:
         
     except Exception as e:
         logger.error(f"Monitoring job failed: {e}", exc_info=True)
+def generate_enhanced_html_report(timestamp: str, pages: List[Dict], 
+                                connectivity_ok: bool = True, 
+                                output_path: str = OUTPUT_HTML, 
+                                hourly_stats: Optional[Tuple[List[str], List[int], List[int]]] = None) -> None:
+    """
+    Generate an enhanced HTML monitoring report with detailed site analysis.
+    
+    Creates a comprehensive HTML report including:
+    - Site-by-site analysis with success rates and metrics
+    - Current status overview with success/failure counts  
+    - Status code distribution per site
+    - Historical trends per site (if data available)
+    - Detailed page-by-page results grouped by domain
+    - Connectivity status indicator
+    
+    Args:
+        timestamp (str): Timestamp of the check being reported.
+        pages (List[Dict]): List of page check results.
+        connectivity_ok (bool): Whether internet connectivity was available.
+        output_path (str): Path where the HTML report should be saved.
+        hourly_stats (Optional[Tuple]): Optional hourly statistics data.
+    
+    Raises:
+        jinja2.TemplateError: If template rendering fails.
+        IOError: If the output file cannot be written.
+    """
+    try:
+        logger.info(f"Generating enhanced HTML report for {len(pages)} pages")
+        
+        # Analyze current check by site
+        site_stats = analyze_by_site(pages)
+        
+        # Get historical data for the last 12 hours for site trends
+        period_data = []
+        try:
+            cutoff = datetime.now() - timedelta(hours=12)
+            period_data = get_history_period(cutoff, datetime.now())
+        except Exception as e:
+            logger.warning(f"Could not retrieve historical data: {e}")
+        
+        # Analyze historical data if available
+        historical_stats = {}
+        site_trends = {}
+        if period_data:
+            historical_stats = analyze_historical_data(period_data)
+            site_trends = calculate_site_trends(period_data)
+        
+        # Get 12-hour history for global trend chart if hourly_stats not provided
+        if hourly_stats is None:
+            history_labels, history_up, history_down = get_history_12h()
+        else:
+            history_labels, history_up, history_down = hourly_stats
+        
+        # Calculate global summary statistics
+        total_pages = len(pages)
+        successful_pages = sum(1 for p in pages if p['ok'])
+        failed_pages = total_pages - successful_pages
+        overall_success_rate = (successful_pages / total_pages * 100) if total_pages > 0 else 0
+        
+        avg_response_time = 0
+        if pages:
+            response_times = [p['response_time'] for p in pages if p['response_time'] is not None]
+            if response_times:
+                avg_response_time = sum(response_times) / len(response_times)
+        
+        # Load and render enhanced template
+        env = Environment(loader=FileSystemLoader(TEMPLATE_PATH))
+        template = env.get_template("enhanced_report_template.html")
+        
+        html_content = template.render(
+            # Basic info
+            timestamp=timestamp,
+            period_label=f"Check du {timestamp}",
+            pages=pages,
+            connectivity_ok=connectivity_ok,
+            
+            # Site analysis
+            site_stats=site_stats,
+            site_trends=site_trends,
+            historical_stats=historical_stats,
+            
+            # Global summary stats
+            total_pages=total_pages,
+            successful_pages=successful_pages,
+            failed_pages=failed_pages,
+            overall_success_rate=overall_success_rate,
+            avg_response_time=avg_response_time,
+            
+            # Historical trend data (global)
+            hist_labels=history_labels,
+            hist_up=history_up,
+            hist_down=history_down
+        )
+        
+        # Write report to file
+        with open(output_path, "w", encoding='utf-8') as f:
+            f.write(html_content)
+        
+        logger.info(f"Enhanced HTML report generated successfully: {output_path}")
+        
+    except Exception as e:
+        logger.error(f"Failed to generate enhanced HTML report: {e}")
+        raise
 
+def analyze_by_site(pages: List[Dict]) -> Dict:
+    """Analyze current check results grouped by site/domain."""
+    from urllib.parse import urlparse
+    
+    site_stats = {}
+    urls = set()
+    for page in pages:
+        domain = urlparse(page['url']).netloc
+        urls.add(page['url'])
+
+        if domain not in site_stats:
+            site_stats[domain] = {
+                'total_pages': 0,
+                'successful_pages': 0,
+                'failed_pages': 0,
+                'avg_response_time': 0,
+                'status_codes': Counter(),
+                'errors': [],
+                'pages': []
+            }
+        
+        stats = site_stats[domain]
+        stats['total_pages'] += 1
+        stats['pages'].append(page)
+        
+        if page['ok']:
+            stats['successful_pages'] += 1
+        else:
+            stats['failed_pages'] += 1
+            if page['error']:
+                stats['errors'].append(page['error'])
+        
+        if page['status_code']:
+            stats['status_codes'][page['status_code']] += 1
+        
+        if page['response_time']:
+            # Calculate running average
+            current_avg = stats['avg_response_time']
+            n = stats['total_pages']
+            stats['avg_response_time'] = (current_avg * (n-1) + page['response_time']) / n
+    
+    # Calculate success rates
+    for domain, stats in site_stats.items():
+        if stats['total_pages'] > 0:
+            stats['success_rate'] = (stats['successful_pages'] / stats['total_pages']) * 100
+        else:
+            stats['success_rate'] = 0
+    logger.info(f"Analyzed {len(site_stats)} sites with {len(urls)} unique URLs")
+    return site_stats
+
+def analyze_historical_data(period_data: List[Dict]) -> Dict:
+    """Analyze historical data for trends and patterns."""
+    from urllib.parse import urlparse
+    
+    site_history = {}
+    hourly_global = {}
+    
+    for check in period_data:
+        timestamp = check['timestamp']
+        dt = datetime.fromisoformat(timestamp)
+        hour_key = dt.replace(minute=0, second=0, microsecond=0)
+        
+        # Global hourly stats
+        if hour_key not in hourly_global:
+            hourly_global[hour_key] = {'up': 0, 'down': 0, 'total': 0}
+        
+        for page in check['pages']:
+            domain = urlparse(page['url']).netloc
+            
+            # Site-specific history
+            if domain not in site_history:
+                site_history[domain] = {
+                    'hourly_stats': {},
+                    'total_checks': 0,
+                    'successful_checks': 0,
+                    'response_times': [],
+                    'incidents': []
+                }
+            
+            site_stats = site_history[domain]
+            site_stats['total_checks'] += 1
+            
+            # Hourly stats per site
+            if hour_key not in site_stats['hourly_stats']:
+                site_stats['hourly_stats'][hour_key] = {'up': 0, 'down': 0}
+            
+            if page['ok']:
+                site_stats['successful_checks'] += 1
+                site_stats['hourly_stats'][hour_key]['up'] += 1
+                hourly_global[hour_key]['up'] += 1
+            else:
+                site_stats['hourly_stats'][hour_key]['down'] += 1
+                hourly_global[hour_key]['down'] += 1
+                
+                # Record incident
+                site_stats['incidents'].append({
+                    'timestamp': timestamp,
+                    'url': page['url'],
+                    'error': page['error'],
+                    'status_code': page['status_code']
+                })
+            
+            hourly_global[hour_key]['total'] += 1
+            
+            if page['response_time']:
+                site_stats['response_times'].append(page['response_time'])
+    
+    # Calculate availability percentages
+    for domain, stats in site_history.items():
+        if stats['total_checks'] > 0:
+            stats['availability'] = (stats['successful_checks'] / stats['total_checks']) * 100
+        else:
+            stats['availability'] = 0
+        
+        if stats['response_times']:
+            stats['avg_response_time'] = sum(stats['response_times']) / len(stats['response_times'])
+        else:
+            stats['avg_response_time'] = 0
+    
+    return {
+        'by_site': site_history,
+        'global_hourly': hourly_global
+    }
+
+def calculate_site_trends(period_data: List[Dict]) -> Dict:
+    """Calculate trends for each site over time."""
+    from urllib.parse import urlparse
+    
+    site_trends = {}
+    
+    for check in period_data:
+        for page in check['pages']:
+            domain = urlparse(page['url']).netloc
+            
+            if domain not in site_trends:
+                site_trends[domain] = {
+                    'timestamps': [],
+                    'success_rates': [],
+                    'response_times': [],
+                    'status_timeline': []
+                }
+            
+            trends = site_trends[domain]
+            trends['timestamps'].append(check['timestamp'])
+            trends['status_timeline'].append(1 if page['ok'] else 0)
+            
+            if page['response_time']:
+                trends['response_times'].append(page['response_time'])
+            else:
+                trends['response_times'].append(None)
+    
+    return site_trends
+
+
+generate_html_report = generate_enhanced_html_report
 
 if __name__ == "__main__":
     """
@@ -1054,6 +1578,4 @@ if __name__ == "__main__":
         print("\nMonitoring service stopped.")
     except Exception as e:
         logger.error(f"Monitoring service crashed: {e}", exc_info=True)
-        raise⚠️ Internet connectivity issues detected!")
-            
-      
+        raise Exception("Internet connectivity issues detected!")
