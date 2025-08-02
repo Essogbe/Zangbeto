@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import asyncio
 import os
 import time
 import argparse
@@ -7,10 +8,11 @@ import subprocess
 import threading
 from datetime import datetime
 from crawler import (
-    load_sites, explore_site, init_db, save_results, get_latest_check, 
-    generate_html_report, check_internet_connectivity, wait_for_connectivity,
-    save_connectivity_log
+    load_sites, explore_site, init_db, save_results, get_latest_check
+   , check_internet_connectivity, wait_for_connectivity,human_history_period, get_hourly_stats
 )
+from crawler import generate_enhanced_html_report as  generate_html_report
+from crawler import save_connectivity_log
 from notify import NotificationManager
 import logging
 
@@ -125,6 +127,21 @@ def main():
         "--connectivity-wait", type=int, default=2,
         help="Minutes to wait for connectivity restoration (default: 2 min)"
     )
+
+    # Add start and end arguments for historical data retrieval
+
+    parser.add_argument(
+        "--history", action="store_true",
+        help="Enable historical data retrieval mode and generate report for this specific period"
+    )
+    parser.add_argument(
+        "--start", type=str, default=None,
+        help="Start date for historical data retrieval (ISO format or string, e.g. 2023-01-01T00:00:00 ,today, yesterday)"
+    )
+    parser.add_argument(
+        "--end", type=str, default=None,
+        help="End date for historical data retrieval (ISO format, e.g. 2023-01-02T00:00:00)"
+    )
     
     args = parser.parse_args()
     
@@ -133,6 +150,55 @@ def main():
         args.count = 1
         logger.info("One-shot mode enabled - will run a single check and exit")
     
+
+    if args.history:
+        if not args.start:
+            logger.error("Start date is required for historical data retrieval")
+            parser.print_help()
+            return
+        
+        else:
+            try:
+                print(f"Retrieving historical data from {args.start} to {args.end or 'now'}")
+                history = human_history_period(args.start, args.end)
+                
+                # Generate hourly stats from history
+                logger.info("Generating hourly statistics from historical data")
+                if not history:
+                    logger.warning("No historical data found for the specified period")
+                    print("No historical data found for the specified period")
+                    return
+                timestamps= []
+                up_downs=[]
+                pages = []
+                for timeline in history:
+                   
+                   for page in timeline['pages']:
+                        timestamps.append(timeline['timestamp'])
+                        pages.append(page)
+                        up_downs.append(page['ok'])
+
+
+                logger.info(f"Total timestamps: {len(timestamps)}, Total up/down statuses: {len(up_downs)}")
+
+                hourly_stats = get_hourly_stats((timestamps, up_downs))
+                
+                output_path = args.output or f"historical_report_{args.start}_{args.end}.html"
+                logger.info(f"Generating historical report from {args.start} to {args.end or 'now'} at {output_path}")
+                
+                generate_html_report(f"{args.start} - {args.end or 'now'}",
+                                        pages, 
+                                        connectivity_ok=True,
+                                        output_path=output_path,
+                                        hourly_stats=hourly_stats)
+                logger.info(f"Historical report generated: {output_path}")
+                open_file_in_browser(output_path)
+                return
+            except Exception as e:
+                logger.error(f"Invalid date format for start or end: {e}")
+                parser.print_help()
+                return
+
     logger.info("Starting monitoring script")
     
     # Initialization
@@ -256,7 +322,7 @@ def main():
                 if not connectivity_ok:
                     msg = "⚠️ Connectivity issues detected!\n\n" + msg
                 
-                notifier.system_notify("Monitoring Alert", msg, icon="dialog-warning")
+                asyncio.run(notifier.system_notify("Monitoring Alert", msg, icon="dialog-warning"))
             else:
                 logger.info("All sites are healthy")
 
@@ -341,6 +407,7 @@ def main():
         
         # Main loop
         try:
+            logger.info("Entering continuous monitoring loop")
             while True:
                 schedule.run_pending()
                 time.sleep(1)
@@ -350,6 +417,7 @@ def main():
 
     # Choose execution mode based on arguments
     if max_checks:
+        logger.info(f"Running limited checks mode: {max_checks} checks")
         # Limited number of checks
         run_limited_checks()
     else:
