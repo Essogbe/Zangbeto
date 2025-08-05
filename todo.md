@@ -23,7 +23,7 @@
   - [ ] JSON export for external tools integration
   - [ ] CSV export for spreadsheet analysis
   - [ ] PDF reports for formal documentation
-  - [ ] Webhook notifications with custom payloads
+  - [ ] Webhook notifications with custom payloads ?
 
 ### YAML Schema Example
 ```yaml
@@ -97,7 +97,7 @@ monitoring:
   - [ ] Site performance metrics over time
   
 - [ ] **PDF Reports**
-  - [ ] Professional reports for stakeholders
+  - [ ] Professional reports for stakeholders (via custom jinja template)
   - [ ] SLA compliance reports
   - [ ] Incident summary reports
 
@@ -175,7 +175,7 @@ monitoring:
   retry_on_failure: 2
 ```
 
-## 📋 Additional Enhancements
+##  Additional Enhancements
 
 ### Configuration Management
 - [ ] Environment variable substitution in YAML
@@ -188,16 +188,13 @@ monitoring:
 - [ ] Site dependency mapping (if A fails, expect B to fail)
 - [ ] Maintenance windows configuration
 - [ ] Custom alert thresholds per site/API
-- [ ] Geographic monitoring (multi-region checks)
-- [ ] Load balancer health check support
+
 
 ### Integration & Automation
 - [ ] CI/CD pipeline integration examples
 - [ ] Docker containerization improvements
-- [ ] Kubernetes deployment manifests
-- [ ] Integration with external monitoring tools (Grafana, DataDog)
-- [ ] Terraform modules for infrastructure deployment
+
 
 ---
 
-*Priority: High | Timeline: v1.2.0 | Dependencies: PyYAML, schema validation
+*Priority: High | Timeline: v1.2.0 | Dependencies: PyYAML, schema validation*
